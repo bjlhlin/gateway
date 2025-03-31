@@ -14,6 +14,7 @@ import (
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	brotliv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/compression/brotli/compressor/v3"
 	gzipv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/compression/gzip/compressor/v3"
+	ztsdv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/compression/zstd/compressor/v3"
 	compressorv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/compressor/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	protobuf "google.golang.org/protobuf/proto"
@@ -46,6 +47,7 @@ func (*compressor) patchHCM(mgr *hcmv3.HttpConnectionManager, irListener *ir.HTT
 	var (
 		brotli bool
 		gzip   bool
+		ztsd   bool
 		filter *hcmv3.HttpFilter
 		err    error
 	)
@@ -58,6 +60,9 @@ func (*compressor) patchHCM(mgr *hcmv3.HttpConnectionManager, irListener *ir.HTT
 				}
 				if irComp.Type == egv1a1.GzipCompressorType {
 					gzip = true
+				}
+				if irComp.Type == egv1a1.ZtsdCompressorType {
+					ztsd = true
 				}
 			}
 		}
@@ -85,7 +90,15 @@ func (*compressor) patchHCM(mgr *hcmv3.HttpConnectionManager, irListener *ir.HTT
 			mgr.HttpFilters = append(mgr.HttpFilters, filter)
 		}
 	}
-
+	if ztsd {
+		ztsdFilterName := compressorFilterName(egv1a1.ZtsdCompressorType)
+		if !hcmContainsFilter(mgr, ztsdFilterName) {
+			if filter, err = buildCompressorFilter(egv1a1.ZtsdCompressorType); err != nil {
+				return err
+			}
+			mgr.HttpFilters = append(mgr.HttpFilters, filter)
+		}
+	}
 	return err
 }
 
@@ -111,6 +124,9 @@ func buildCompressorFilter(compressionType egv1a1.CompressorType) (*hcmv3.HttpFi
 	case egv1a1.GzipCompressorType:
 		extensionName = "envoy.compression.gzip.compressor"
 		extensionMsg = &gzipv3.Gzip{}
+	case egv1a1.ZtsdCompressorType:
+		extensionName = "envoy.compression.zstd.compressor"
+		extensionMsg = &ztsdv3.Zstd{}
 	}
 
 	if extensionAny, err = proto.ToAnyWithValidation(extensionMsg); err != nil {
@@ -157,6 +173,7 @@ func (*compressor) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute) error
 	var (
 		brotli        bool
 		gzip          bool
+		ztsd          bool
 		perFilterCfg  map[string]*anypb.Any
 		compressorAny *anypb.Any
 		err           error
@@ -169,9 +186,12 @@ func (*compressor) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute) error
 		if irComp.Type == egv1a1.GzipCompressorType {
 			gzip = true
 		}
+		if irComp.Type == egv1a1.ZtsdCompressorType {
+			ztsd = true
+		}
 	}
 
-	if !brotli && !gzip {
+	if !brotli && !gzip && !ztsd {
 		return nil
 	}
 
@@ -206,7 +226,16 @@ func (*compressor) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute) error
 		}
 		route.TypedPerFilterConfig[gzipFilterName] = compressorAny
 	}
-
+	if ztsd {
+		ztsdFilterName := compressorFilterName(egv1a1.ZtsdCompressorType)
+		if _, ok := perFilterCfg[ztsdFilterName]; ok {
+			// This should not happen since this is the only place where the filter
+			// config is added in a route.
+			return fmt.Errorf("route already contains filter config: %s, %+v",
+				ztsdFilterName, route)
+		}
+		route.TypedPerFilterConfig[ztsdFilterName] = compressorAny
+	}
 	return nil
 }
 

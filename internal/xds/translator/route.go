@@ -73,7 +73,6 @@ func buildXdsRoute(httpRoute *ir.HTTPRoute) (*routev3.Route, error) {
 		if !httpRoute.IsHTTP2 {
 			routeAction.UpgradeConfigs = buildUpgradeConfig(httpRoute.Traffic)
 		}
-
 		router.Action = &routev3.Route_Route{Route: routeAction}
 	default:
 		backendWeights := httpRoute.Destination.ToBackendWeights()
